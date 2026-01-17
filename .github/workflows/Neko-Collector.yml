@@ -1,0 +1,48 @@
+name: Neko Token Collector
+on:
+  workflow_dispatch:
+    inputs:
+      num_accounts:
+        description: 'Number of accounts to collect'
+        required: true
+        default: '1'
+      encryption_password:
+        description: 'Password to encrypt the tokens'
+        required: true
+
+jobs:
+  collect-tokens:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup CLIProxyAPI
+        run: |
+          curl -L https://github.com/router-for-me/CLIProxyAPI/releases/latest/download/CLIProxyAPI-linux-amd64 -o cliproxy
+          chmod +x cliproxy
+
+      - name: Collect Tokens
+        run: |
+          # This mimics the Hailer367/strix collector
+          # In a real scenario, this would involve the interactive OAuth flow
+          # For this implementation, we set up the structure
+          mkdir -p ~/.cli-proxy-api/auth
+          echo "Please follow the CLIProxyAPI login instructions in the logs..."
+          # ./cliproxy --login (interactive)
+          # After collection, we encrypt
+
+      - name: Encrypt and Upload
+        run: |
+          tar -czf qwen-tokens.tar.gz -C ~/.cli-proxy-api/auth .
+          openssl enc -aes-256-cbc -salt -pbkdf2 \
+            -in qwen-tokens.tar.gz \
+            -out qwen-tokens.enc \
+            -pass pass:'${{ github.event.inputs.encryption_password }}'
+          BASE64_SECRET=$(base64 -w 0 qwen-tokens.enc)
+          echo "::add-mask::$BASE64_SECRET"
+          echo "Encoded Secret: $BASE64_SECRET"
+
+      - name: Instructions
+        run: |
+          echo "Copy the 'Encoded Secret' from the logs and save it as a GitHub Secret named QWEN_TOKENS."
