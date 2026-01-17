@@ -1,9 +1,10 @@
 name: Neko Security Scan
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+  # Disabled auto-triggers as this workflow requires manual inputs
+  # push:
+  #   branches: [ main, master ]
+  # pull_request:
+  #   branches: [ main, master ]
   workflow_dispatch:
     inputs:
       target:
