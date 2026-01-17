@@ -15,8 +15,9 @@ on:
         required: true
         default: 'qwen3-coder-plus'
       encryption_password:
-        description: 'Password for decrypting tokens'
-        required: true
+        description: 'Password for decrypting tokens (optional - will use ENCRYPTION_PASSWORD secret if not provided)'
+        required: false
+        default: ''
 
 jobs:
   neko-scan:
@@ -37,25 +38,78 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Decrypt QWEN_TOKENS
+        id: decrypt
         env:
           QWEN_TOKENS: ${{ secrets.QWEN_TOKENS }}
+          # Priority: 1) Manual input, 2) Repository secret
           ENCRYPTION_PASSWORD: ${{ github.event.inputs.encryption_password || secrets.ENCRYPTION_PASSWORD }}
         run: |
+          set -e
+          
+          # Validate QWEN_TOKENS secret
           if [ -z "$QWEN_TOKENS" ]; then
-            echo "::error::QWEN_TOKENS secret is missing!"
+            echo "::error::QWEN_TOKENS secret is missing! Please add it to repository secrets."
             exit 1
           fi
-          # tr -d '[:space:]' removes any whitespace/newlines that cause "base64: invalid input"
-          echo "$QWEN_TOKENS" | tr -d '[:space:]' | base64 -d > qwen-tokens.enc
           
-          openssl enc -aes-256-cbc -d -salt -pbkdf2 \
+          # Validate ENCRYPTION_PASSWORD (from input or secret)
+          if [ -z "$ENCRYPTION_PASSWORD" ]; then
+            echo "::error::ENCRYPTION_PASSWORD is not set! Either provide it as workflow input or set ENCRYPTION_PASSWORD secret."
+            exit 1
+          fi
+          
+          echo "::group::Decrypting tokens"
+          
+          # Clean and decode base64 - handle various encoding issues
+          # 1. Remove all whitespace (spaces, tabs, newlines, carriage returns)
+          # 2. Remove any URL-safe base64 characters and convert to standard base64
+          # 3. Handle potential padding issues
+          CLEANED_TOKEN=$(echo "$QWEN_TOKENS" | tr -d '[:space:]' | tr '_-' '/+')
+          
+          # Add padding if needed (base64 strings should be divisible by 4)
+          PADDING=$((4 - ${#CLEANED_TOKEN} % 4))
+          if [ $PADDING -ne 4 ]; then
+            CLEANED_TOKEN="${CLEANED_TOKEN}$(printf '=%.0s' $(seq 1 $PADDING))"
+          fi
+          
+          # Decode base64 with better error handling
+          if ! echo "$CLEANED_TOKEN" | base64 -d > qwen-tokens.enc 2>/dev/null; then
+            echo "::error::Failed to decode QWEN_TOKENS. The base64 encoding appears to be invalid."
+            echo "::error::Token length: ${#QWEN_TOKENS}, Cleaned length: ${#CLEANED_TOKEN}"
+            exit 1
+          fi
+          
+          echo "Base64 decode successful ($(stat -c%s qwen-tokens.enc) bytes)"
+          
+          # Decrypt with OpenSSL
+          if ! openssl enc -aes-256-cbc -d -salt -pbkdf2 \
             -in qwen-tokens.enc \
             -out qwen-tokens.tar.gz \
-            -pass pass:"$ENCRYPTION_PASSWORD"
+            -pass pass:"$ENCRYPTION_PASSWORD" 2>/dev/null; then
+            echo "::error::OpenSSL decryption failed. Check if ENCRYPTION_PASSWORD is correct."
+            exit 1
+          fi
           
+          echo "OpenSSL decryption successful ($(stat -c%s qwen-tokens.tar.gz) bytes)"
+          
+          # Extract tokens
           mkdir -p ~/.cli-proxy-api/auth
-          tar -xzf qwen-tokens.tar.gz -C ~/.cli-proxy-api/auth
-          echo "token_count=$(ls ~/.cli-proxy-api/auth/qwen-*.json | wc -l)" >> $GITHUB_OUTPUT
+          if ! tar -xzf qwen-tokens.tar.gz -C ~/.cli-proxy-api/auth 2>/dev/null; then
+            echo "::error::Failed to extract token archive. The decrypted file may be corrupted."
+            exit 1
+          fi
+          
+          # Count and report token files
+          TOKEN_COUNT=$(ls ~/.cli-proxy-api/auth/qwen-*.json 2>/dev/null | wc -l || echo "0")
+          echo "Extracted $TOKEN_COUNT token file(s)"
+          echo "token_count=$TOKEN_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$TOKEN_COUNT" -eq 0 ]; then
+            echo "::warning::No qwen-*.json token files found after extraction!"
+          fi
+          
+          echo "::endgroup::"
+          echo "✅ Token decryption completed successfully"
 
       - name: Build Neko Agent
         uses: docker/build-push-action@v5
