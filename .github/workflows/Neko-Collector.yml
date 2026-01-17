@@ -1,48 +1,521 @@
-name: Neko Token Collector
+name: Qwen Code Multi-Account Token Collection
+
 on:
   workflow_dispatch:
     inputs:
       num_accounts:
-        description: 'Number of accounts to collect'
+        description: 'Number of Qwen Code accounts to authenticate'
         required: true
-        default: '1'
+        default: '3'
+        type: choice
+        options: ['1','2','3','4','5','6','7','8','9','10']
       encryption_password:
-        description: 'Password to encrypt the tokens'
+        description: 'Password for encrypting tokens (remember this!)'
         required: true
+        type: string
 
 jobs:
   collect-tokens:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+
     steps:
-      - name: Checkout Code
+      # ---------- 1. Checkout repository ----------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup CLIProxyAPI
-        run: |
-          curl -L https://github.com/router-for-me/CLIProxyAPI/releases/latest/download/CLIProxyAPI-linux-amd64 -o cliproxy
-          chmod +x cliproxy
+      # ---------- 2. Setup Go for building CLIProxyAPI ----------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
 
-      - name: Collect Tokens
+      # ---------- 3. Setup Python ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---------- 4. Install dependencies ----------
+      - name: Install dependencies
         run: |
-          # This mimics the Hailer367/strix collector
-          # In a real scenario, this would involve the interactive OAuth flow
-          # For this implementation, we set up the structure
-          mkdir -p ~/.cli-proxy-api/auth
-          echo "Please follow the CLIProxyAPI login instructions in the logs..."
-          # ./cliproxy --login (interactive)
-          # After collection, we encrypt
+          sudo apt-get update
+          sudo apt-get install -y expect
+          pip install requests pynacl
+
+      # ---------- 5. Install CLIProxyAPI ----------
+      - name: Install CLIProxyAPI
+        run: |
+          set -euo pipefail
+          echo "::group::Installing CLIProxyAPI"
+          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI.git /tmp/CLIProxyAPI
+          cd /tmp/CLIProxyAPI
+          go build -o cli-proxy-api ./cmd/server
+          sudo mv cli-proxy-api /usr/local/bin/cliproxyapi
+          cd /
+          rm -rf /tmp/CLIProxyAPI
+          cliproxyapi --help
+          echo "::endgroup::"
+
+      # ---------- 5. Validate aliases secret ----------
+      - name: Validate QWEN_ALIASES secret
+        env:
+          QWEN_ALIASES: ${{ secrets.QWEN_ALIASES }}
+        run: |
+          set -euo pipefail
+          if [ -z "$QWEN_ALIASES" ]; then
+            echo "::error::QWEN_ALIASES secret is not set!"
+            echo "Please set the QWEN_ALIASES secret with comma-separated aliases (e.g., 'john,jane,alex')"
+            exit 1
+          fi
           
-      - name: Encrypt and Upload
+          IFS=',' read -r -a ALIAS_ARRAY <<< "$QWEN_ALIASES"
+          NEEDED=${{ github.event.inputs.num_accounts }}
+          
+          echo "Found ${#ALIAS_ARRAY[@]} aliases in QWEN_ALIASES secret"
+          echo "Requested accounts: $NEEDED"
+          
+          if [ "${#ALIAS_ARRAY[@]}" -lt "$NEEDED" ]; then
+            echo "::error::QWEN_ALIASES contains ${#ALIAS_ARRAY[@]} aliases, but $NEEDED accounts requested!"
+            exit 1
+          fi
+          
+          echo "✅ Alias validation passed"
+
+      # ---------- 6. Create auth directory structure ----------
+      - name: Create auth directory structure
         run: |
-          tar -czf qwen-tokens.tar.gz -C ~/.cli-proxy-api/auth .
+          set -euo pipefail
+          AUTH_DIR="$HOME/.cli-proxy-api"
+          mkdir -p "$AUTH_DIR"
+          chmod 700 "$AUTH_DIR"
+          echo "AUTH_DIR=$AUTH_DIR" >> "$GITHUB_ENV"
+          echo "✅ Auth directory created: $AUTH_DIR"
+
+      # ---------- 7. Create config file ----------
+      - name: Create CLIProxyAPI config
+        run: |
+          set -euo pipefail
+          cat > "$AUTH_DIR/config.yaml" << EOF
+          port: 8317
+          auth-dir: "$AUTH_DIR"
+          debug: true
+          logging-to-file: true
+          EOF
+          echo "Config file created:"
+          cat "$AUTH_DIR/config.yaml"
+
+      # ---------- 8. Authenticate accounts sequentially ----------
+      - name: Authenticate accounts sequentially
+        env:
+          QWEN_ALIASES: ${{ secrets.QWEN_ALIASES }}
+        run: |
+          set -euo pipefail
+          
+          # Parse aliases
+          IFS=',' read -r -a ALIAS_ARRAY <<< "$QWEN_ALIASES"
+          NEEDED=${{ github.event.inputs.num_accounts }}
+          
+          echo "=========================================="
+          echo "Starting authentication for $NEEDED accounts"
+          echo "=========================================="
+          
+          COLLECTED=0
+          
+          for i in $(seq 1 "$NEEDED"); do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📱 AUTHENTICATING ACCOUNT $i / $NEEDED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # Get alias for this account (zero-based array)
+            CURRENT_ALIAS="${ALIAS_ARRAY[$((i-1))]}"
+            CURRENT_ALIAS=$(echo "$CURRENT_ALIAS" | xargs)  # Trim whitespace
+            
+            echo "Using alias: $CURRENT_ALIAS"
+            
+            # Create log file for this account
+            LOG_FILE="/tmp/cliproxy-$i.log"
+            EXPECT_SCRIPT="/tmp/auth-$i.exp"
+            
+            # Create expect script that will:
+            # 1. Start CLIProxyAPI and wait for the OAuth URL
+            # 2. Wait for the alias prompt after user authenticates
+            # 3. Send the alias automatically
+            cat > "$EXPECT_SCRIPT" << EXPECT_EOF
+          #!/usr/bin/expect -f
+          set timeout 660
+          set alias "$CURRENT_ALIAS"
+          
+          # Start CLIProxyAPI
+          spawn cliproxyapi -config "$AUTH_DIR/config.yaml" -qwen-login -no-browser
+          
+          # Log file for capturing output
+          log_file -noappend "$LOG_FILE"
+          
+          # Wait for the alias prompt (this appears after OAuth completes)
+          # The prompt is: "Please input your email address or alias for Qwen:"
+          expect {
+              -re {Please input your email address or alias} {
+                  # Small delay before sending
+                  sleep 1
+                  send "\$alias\r"
+                  exp_continue
+              }
+              -re {Authentication saved to} {
+                  # Success! Token was saved
+                  puts "\n✅ Authentication successful!"
+              }
+              -re {authentication successful} {
+                  # Success message
+                  puts "\n✅ Authentication completed!"
+              }
+              timeout {
+                  puts "\n⏰ Timeout waiting for authentication"
+                  exit 1
+              }
+              eof {
+                  puts "\n📝 Process ended"
+              }
+          }
+          
+          # Give it a moment to finish writing files
+          sleep 2
+          EXPECT_EOF
+            
+            chmod +x "$EXPECT_SCRIPT"
+            
+            # Run expect script in background
+            $EXPECT_SCRIPT > /tmp/expect-$i.log 2>&1 &
+            EXPECT_PID=$!
+            
+            echo "Started authentication process (PID: $EXPECT_PID)"
+            
+            # Wait for OAuth URL to appear in log
+            echo "Waiting for OAuth URL..."
+            URL=""
+            for retry in {1..60}; do
+              if [ -f "$LOG_FILE" ]; then
+                URL=$(grep -oP 'https://chat\.qwen\.ai/authorize[^\s"]+' "$LOG_FILE" 2>/dev/null | head -1 || true)
+                if [ -n "$URL" ]; then
+                  break
+                fi
+              fi
+              sleep 2
+            done
+            
+            if [ -z "$URL" ]; then
+              echo "::warning::No OAuth URL found for account $i"
+              echo "Log contents:"
+              cat "$LOG_FILE" 2>/dev/null || echo "(empty log)"
+              cat /tmp/expect-$i.log 2>/dev/null || echo "(empty expect log)"
+              kill $EXPECT_PID 2>/dev/null || true
+              continue
+            fi
+            
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  🔗 AUTHENTICATION URL FOR ACCOUNT $i                        ║"
+            echo "╠══════════════════════════════════════════════════════════════╣"
+            echo "║  Open this URL in your browser and log in:                   ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "   $URL"
+            echo ""
+            echo "⏳ Waiting for authentication (timeout: 10 minutes)..."
+            echo "   Alias '$CURRENT_ALIAS' will be automatically entered."
+            echo ""
+            
+            # Wait for token file to appear OR for expect process to complete
+            TOKEN_FILE=""
+            for s in {1..600}; do
+              # Check if expect process is still running
+              if ! kill -0 $EXPECT_PID 2>/dev/null; then
+                echo "Authentication process ended"
+                # Check if it was successful
+                if grep -q "Authentication saved to\|authentication successful" /tmp/expect-$i.log 2>/dev/null; then
+                  echo "✅ Authentication completed successfully"
+                fi
+                break
+              fi
+              
+              # Look for the token file
+              TOKEN_FILE=$(find "$AUTH_DIR" -maxdepth 1 -name "qwen-*.json" -newer "$LOG_FILE" -print -quit 2>/dev/null || true)
+              if [ -n "$TOKEN_FILE" ]; then
+                echo "✅ Token file created: $(basename "$TOKEN_FILE")"
+                COLLECTED=$((COLLECTED + 1))
+                # Kill the expect process since we got the token
+                kill $EXPECT_PID 2>/dev/null || true
+                break
+              fi
+              
+              # Show progress every 30 seconds
+              if [ $((s % 30)) -eq 0 ]; then
+                echo "   Still waiting... ($s seconds elapsed)"
+              fi
+              
+              sleep 1
+            done
+            
+            # Clean up the expect process if still running
+            kill $EXPECT_PID 2>/dev/null || true
+            wait $EXPECT_PID 2>/dev/null || true
+            
+            # Final check for token file
+            if [ -z "$TOKEN_FILE" ]; then
+              TOKEN_FILE=$(find "$AUTH_DIR" -maxdepth 1 -name "qwen-*.json" -print -quit 2>/dev/null || true)
+              if [ -n "$TOKEN_FILE" ]; then
+                echo "✅ Token file found: $(basename "$TOKEN_FILE")"
+                COLLECTED=$((COLLECTED + 1))
+              else
+                echo "::warning::No token file found for account $i"
+                echo "Expect log contents:"
+                tail -50 /tmp/expect-$i.log 2>/dev/null || echo "(no expect log)"
+                echo "CLIProxyAPI log contents:"
+                tail -50 "$LOG_FILE" 2>/dev/null || echo "(no log)"
+              fi
+            fi
+            
+            # Clean up temp files
+            rm -f "$EXPECT_SCRIPT" /tmp/expect-$i.log
+            
+            # Brief pause between accounts
+            if [ "$i" -lt "$NEEDED" ]; then
+              echo "⏸️ Pausing 5 seconds before next account..."
+              sleep 5
+            fi
+          done
+          
+          echo ""
+          echo "=========================================="
+          echo "Authentication phase complete"
+          echo "Tokens collected: $COLLECTED / $NEEDED"
+          echo "=========================================="
+          
+          # Set output for next steps
+          echo "TOKENS_COLLECTED=$COLLECTED" >> "$GITHUB_ENV"
+
+      # ---------- 9. Verify tokens ----------
+      - name: Verify collected tokens
+        run: |
+          set -euo pipefail
+          
+          echo "::group::Verifying collected tokens"
+          
+          TOKEN_COUNT=$(find "$AUTH_DIR" -maxdepth 1 -name 'qwen-*.json' 2>/dev/null | wc -l)
+          NEEDED=${{ github.event.inputs.num_accounts }}
+          
+          echo "Token files found: $TOKEN_COUNT"
+          echo "Tokens requested: $NEEDED"
+          
+          if [ "$TOKEN_COUNT" -eq 0 ]; then
+            echo "::error::No tokens were collected!"
+            echo ""
+            echo "Possible issues:"
+            echo "1. You didn't complete the OAuth login in time"
+            echo "2. The authentication process failed"
+            echo "3. Network/firewall issues"
+            echo ""
+            echo "Please re-run the workflow and complete the authentication."
+            exit 1
+          fi
+          
+          echo ""
+          echo "Collected token files:"
+          ls -la "$AUTH_DIR"/qwen-*.json 2>/dev/null || true
+          
+          if [ "$TOKEN_COUNT" -lt "$NEEDED" ]; then
+            echo "::warning::Only $TOKEN_COUNT of $NEEDED tokens were collected"
+          fi
+          
+          echo "::endgroup::"
+
+      # ---------- 10. Encrypt tokens ----------
+      - name: Package and encrypt tokens
+        run: |
+          set -euo pipefail
+          
+          echo "::group::Encrypting tokens"
+          
+          TEMP_DIR=$(mktemp -d)
+          cd "$TEMP_DIR"
+          
+          # Copy all token files to temp directory
+          cp "$AUTH_DIR"/qwen-*.json . 2>/dev/null || true
+          
+          TOKEN_COUNT=$(ls qwen-*.json 2>/dev/null | wc -l)
+          echo "Packaging $TOKEN_COUNT token files..."
+          
+          # Create tarball
+          tar -czf qwen-tokens.tar.gz qwen-*.json
+          echo "Created tarball: $(ls -lh qwen-tokens.tar.gz)"
+          
+          # Encrypt with AES-256-CBC (matching strix-scan.yml decryption)
+          # Using -pbkdf2 for key derivation (more secure)
           openssl enc -aes-256-cbc -salt -pbkdf2 \
             -in qwen-tokens.tar.gz \
             -out qwen-tokens.enc \
             -pass pass:'${{ github.event.inputs.encryption_password }}'
-          BASE64_SECRET=$(base64 -w 0 qwen-tokens.enc)
-          echo "::add-mask::$BASE64_SECRET"
-          echo "Encoded Secret: $BASE64_SECRET"
           
-      - name: Instructions
+          echo "Encrypted file: $(ls -lh qwen-tokens.enc)"
+          
+          # Base64 encode for storage as GitHub secret (one line, no wrapping)
+          BASE64_SECRET=$(base64 -w 0 qwen-tokens.enc)
+          echo "BASE64_SECRET=$BASE64_SECRET" >> "$GITHUB_ENV"
+          
+          # Create output directory for the artifact
+          OUTPUT_DIR="$HOME/qwen-token-output"
+          mkdir -p "$OUTPUT_DIR"
+          
+          # Create JSON file with the secret and metadata
+          cat > "$OUTPUT_DIR/qwen_tokens_secret.json" << JSONEOF
+          {
+            "secret_name": "QWEN_TOKENS",
+            "secret_value": "$BASE64_SECRET",
+            "token_count": $TOKEN_COUNT,
+            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "expires_in_days": 7,
+            "instructions": "Copy the 'secret_value' field content and paste it as the value for QWEN_TOKENS repository secret."
+          }
+          JSONEOF
+          
+          # Also create a plain text file with just the secret for easy copy-paste
+          echo "$BASE64_SECRET" > "$OUTPUT_DIR/QWEN_TOKENS_SECRET.txt"
+          
+          # Create a README for the artifact
+          cat > "$OUTPUT_DIR/README.md" << 'READMEEOF'
+          # Qwen Tokens Secret
+          
+          This artifact contains your encrypted Qwen tokens.
+          
+          ## Files
+          
+          - `QWEN_TOKENS_SECRET.txt` - Contains ONLY the one-line base64 secret (easy copy-paste)
+          - `qwen_tokens_secret.json` - Contains the secret with metadata
+          
+          ## How to Use
+          
+          1. Open `QWEN_TOKENS_SECRET.txt`
+          2. Copy the ENTIRE content (it's one long line)
+          3. Go to your repository → Settings → Secrets and variables → Actions
+          4. Click "New repository secret"
+          5. Name: `QWEN_TOKENS`
+          6. Value: Paste the copied content
+          7. Click "Add secret"
+          
+          ## Important
+          
+          - Remember your encryption password - you'll need it for strix-scan.yml
+          - This artifact expires in 7 days
+          - Never share these tokens
+          READMEEOF
+          
+          echo "Created output files:"
+          ls -la "$OUTPUT_DIR"
+          echo ""
+          echo "Secret length: ${#BASE64_SECRET} characters"
+          
+          # Cleanup temp files
+          rm -rf "$TEMP_DIR"
+          
+          echo "::endgroup::"
+
+      # ---------- 11. Update GitHub Secret ----------
+      - name: Update QWEN_TOKENS Secret
+        env:
+          SERVER_TOKEN_SECRET: ${{ secrets.SERVER_TOKEN }}
         run: |
-          echo "Copy the 'Encoded Secret' from the logs and save it as a GitHub Secret named QWEN_TOKENS."
+          set -euo pipefail
+          echo "::group::Updating QWEN_TOKENS secret"
+          
+          if [ -z "$SERVER_TOKEN_SECRET" ]; then
+            echo "::warning::SERVER_TOKEN secret not set. Cannot update secret automatically."
+            echo "Please manually set QWEN_TOKENS secret using the artifact below."
+            echo "::endgroup::"
+            exit 0
+          fi
+          
+          # Extract repo name
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Use the update_secret script
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          
+          echo "Debug: Checking Python dependencies..."
+          python3 -c "import requests; import nacl; print('Dependencies found')" || {
+            echo "::error::Python dependencies (requests or pynacl) are missing!"
+            exit 1
+          }
+          
+          echo "Updating secret..."
+          python3 -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "$REPO_NAME" \
+            "QWEN_TOKENS" \
+            "$BASE64_SECRET" || {
+              echo "::error::Secret update script failed with exit code $?"
+              exit 1
+            }
+            
+          echo "✓ Secret 'QWEN_TOKENS' updated successfully"
+          echo "::endgroup::"
+
+      # ---------- 11. Upload artifact ----------
+      - name: Upload encrypted tokens
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-encrypted-tokens
+          path: ~/qwen-token-output/
+          retention-days: 7
+
+      # ---------- 12. Show instructions ----------
+      - name: Show usage instructions
+        run: |
+          TOKEN_COUNT=$(find "$AUTH_DIR" -maxdepth 1 -name 'qwen-*.json' 2>/dev/null | wc -l)
+          
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          ## ✅ Token Collection Complete
+          
+          The `QWEN_TOKENS` repository secret has been **automatically updated**.
+          EOF
+          
+          if [ -z "${{ secrets.SERVER_TOKEN }}" ]; then
+            cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          > [!WARNING]
+          > `SERVER_TOKEN` secret was not found. You must manually update the `QWEN_TOKENS` secret.
+          EOF
+          fi
+          
+          echo "**Tokens collected:** $TOKEN_COUNT / ${{ github.event.inputs.num_accounts }}" >> $GITHUB_STEP_SUMMARY
+          
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          
+          ### 📦 Manual Fallback (Optional)
+          
+          If the automatic update failed or you need the files:
+          1. **Download the artifact** `qwen-encrypted-tokens` from this workflow
+             - Contains `QWEN_TOKENS_SECRET.txt` for manual copy-paste.
+          
+          2. **Run strix-scan.yml** with the same encryption password.
+          
+          ### 🔐 Security Notes
+          
+          - The tokens are encrypted with AES-256-CBC
+          - Keep your encryption password safe - you'll need it for strix-scan.yml
+          - The artifact expires in 7 days
+          - Never share your tokens or encryption password
+          
+          ### 🔄 To add more accounts later
+          
+          Re-run this workflow with a higher number of accounts. The new tokens will replace the old ones.
+          EOF
+
+      # ---------- 13. Cleanup sensitive files ----------
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf "$AUTH_DIR"/qwen-*.json 2>/dev/null || true
+          rm -rf "$HOME/qwen-token-output" 2>/dev/null || true
+          rm -f /tmp/cliproxy-*.log /tmp/expect-*.log /tmp/auth-*.exp 2>/dev/null || true
+          echo "Sensitive files cleaned up"
