@@ -7,13 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Scan target'
+        description: 'Scan target (e.g. GitHub URL or local path)'
         required: true
-        default: './'
+        default: 'https://github.com/lightsparkdev/python-sdk'
       model:
         description: 'LLM Model'
         required: true
         default: 'qwen3-coder-plus'
+      encryption_password:
+        description: 'Password for decrypting tokens'
+        required: true
 
 jobs:
   neko-scan:
@@ -34,14 +37,25 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Decrypt QWEN_TOKENS
+        env:
+          QWEN_TOKENS: ${{ secrets.QWEN_TOKENS }}
+          ENCRYPTION_PASSWORD: ${{ github.event.inputs.encryption_password || secrets.ENCRYPTION_PASSWORD }}
         run: |
-          echo "${{ secrets.QWEN_TOKENS }}" | base64 -d > qwen-tokens.enc
+          if [ -z "$QWEN_TOKENS" ]; then
+            echo "::error::QWEN_TOKENS secret is missing!"
+            exit 1
+          fi
+          # tr -d '[:space:]' removes any whitespace/newlines that cause "base64: invalid input"
+          echo "$QWEN_TOKENS" | tr -d '[:space:]' | base64 -d > qwen-tokens.enc
+          
           openssl enc -aes-256-cbc -d -salt -pbkdf2 \
             -in qwen-tokens.enc \
             -out qwen-tokens.tar.gz \
-            -pass pass:'${{ secrets.ENCRYPTION_PASSWORD }}'
-          mkdir -p auth
-          tar -xzf qwen-tokens.tar.gz -C auth
+            -pass pass:"$ENCRYPTION_PASSWORD"
+          
+          mkdir -p ~/.cli-proxy-api/auth
+          tar -xzf qwen-tokens.tar.gz -C ~/.cli-proxy-api/auth
+          echo "token_count=$(ls ~/.cli-proxy-api/auth/qwen-*.json | wc -l)" >> $GITHUB_OUTPUT
 
       - name: Build Neko Agent
         uses: docker/build-push-action@v5
@@ -56,6 +70,7 @@ jobs:
         run: |
           curl -L https://github.com/router-for-me/CLIProxyAPI/releases/latest/download/CLIProxyAPI-linux-amd64 -o cliproxy
           chmod +x cliproxy
+          # Start in background, it will pick up tokens from ~/.cli-proxy-api/auth
           ./cliproxy > cliproxy.log 2>&1 &
           sleep 5
 
@@ -63,9 +78,18 @@ jobs:
         env:
           NEKODB_TOKEN: ${{ secrets.NEKODB_TOKEN }}
           NEKODB_REPO: ${{ github.repository_owner }}/NekoDB
+          TARGET_INPUT: ${{ github.event.inputs.target }}
         run: |
+          # If target is a URL, clone it first
+          if [[ "$TARGET_INPUT" == http* ]]; then
+            git clone "$TARGET_INPUT" /tmp/scan-target
+            TARGET_VOLUME="/tmp/scan-target"
+          else
+            TARGET_VOLUME="${{ github.workspace }}"
+          fi
+
           docker run --network host \
-            -v ${{ github.workspace }}:/workspace \
+            -v "$TARGET_VOLUME":/workspace \
             -e NEKODB_TOKEN=$NEKODB_TOKEN \
             -e NEKODB_REPO=$NEKODB_REPO \
             -e TARGET_PATH=/workspace \

@@ -112,10 +112,10 @@ RUN pip3 install --break-system-packages aiohttp requests jinja2
 ENV PATH="/root/go/bin:${PATH}"
 
 # Final Tool Count Check (should be > 70)
-# Including: nmap, masscan, rustscan, sqlmap, commix, nikto, ffuf, dirb, dirsearch, wfuzz,
-# gobuster, feroxbuster, nuclei, katana, subfinder, httpx, naabu, interactsh, jwt-tool,
-# semgrep, bandit, checkov, shellcheck, detect-secrets, vulture, dodgy, safety, pip-audit,
-# radon, xenon, gitleaks, trufflehog, trivy, grype, syft, eslint, retire, gosec, terrascan,
+# Including: nmap, masscan, rustscan, sqlmap, commix, nikto, ffuf, dirb, dirsearch, wfuzz, 
+# gobuster, feroxbuster, nuclei, katana, subfinder, httpx, naabu, interactsh, jwt-tool, 
+# semgrep, bandit, checkov, shellcheck, detect-secrets, vulture, dodgy, safety, pip-audit, 
+# radon, xenon, gitleaks, trufflehog, trivy, grype, syft, eslint, retire, gosec, terrascan, 
 # kics, wapiti, xsser, metasploit, ... and many more dependencies.
 
 ENTRYPOINT ["python3", "-m", "neko.agents.commander"]
