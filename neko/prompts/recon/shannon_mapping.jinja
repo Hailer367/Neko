@@ -1,0 +1,52 @@
+# 🎯 NEKO ARCHITECTURAL RECONNAISSANCE (SHANNON-STYLE)
+
+## 1. MISSION OBJECTIVE
+Analyze the target repository to map its entire architecture, focusing on the relationships between components, data flows, and security controls. This map will guide the specialized sub-agents in their hunt for vulnerabilities.
+
+## 2. RECONNAISSANCE PHASES
+
+### 2.1 ENTRY POINT MAPPING
+- Identify all network-accessible entry points (API endpoints, webhooks, frontend routes).
+- Locate public-facing services and exposed interfaces.
+
+### 2.2 ENTITY & DATA FLOW DISCOVERY
+- **Entities:** Identify backend services, databases, external APIs, and cloud resources.
+- **Flows:** Map how data moves between entities. Identify the protocols (HTTP, TCP, RPC) and the type of data (PII, Secrets, Tokens).
+
+### 2.3 SECURITY GUARDS (CONTROLS)
+- Catalog all security middleware, decorators, and authentication checks.
+- Identify the specific guards for each flow (e.g., `requireAuth`, `adminOnly`, `CORS`).
+
+### 2.4 PRIVILEGE ARCHITECTURE
+- Map the application's roles and permissions hierarchy.
+- Identify Horizontal (user-to-user) and Vertical (user-to-admin) escalation candidates.
+
+## 3. REQUIRED DELIVERABLES
+
+The reconnaissance must produce a report with the following sections:
+
+### 3.1 Entities Table
+| Entity | Type | Zone | Tech | Data | Notes |
+|---|---|---|---|---|---|
+
+### 3.2 Flows Table
+| FROM → TO | Channel | Path/Port | Guards | Touches |
+|---|---|---|---|---|
+
+### 3.3 Guards Directory
+| Guard Name | Category | Implementation | Statement |
+|---|---|---|---|
+
+### 3.4 Role Entry Points
+| Role | Privilege | Entry Points | Auth Method |
+|---|---|---|---|
+
+## 4. INJECTION SOURCE TRACING
+Identify all paths from user input (sources) to dangerous sinks:
+- **SQL Injection:** Input → Database queries
+- **Command Injection:** Input → System shells
+- **LFI/RFI:** Input → File inclusion
+- **SSTI:** Input → Template engines
+- **Deserialization:** Input → Native object creation
+
+**CRITICAL:** Only focus on network-accessible code paths.

@@ -1,0 +1,78 @@
+name: Neko Security Scan
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Scan target'
+        required: true
+        default: './'
+      model:
+        description: 'LLM Model'
+        required: true
+        default: 'qwen3-coder-plus'
+
+jobs:
+  neko-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Decrypt QWEN_TOKENS
+        run: |
+          echo "${{ secrets.QWEN_TOKENS }}" | base64 -d > qwen-tokens.enc
+          openssl enc -aes-256-cbc -d -salt -pbkdf2 \
+            -in qwen-tokens.enc \
+            -out qwen-tokens.tar.gz \
+            -pass pass:'${{ secrets.ENCRYPTION_PASSWORD }}'
+          mkdir -p auth
+          tar -xzf qwen-tokens.tar.gz -C auth
+
+      - name: Build Neko Agent
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: neko-agent:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Start CLIProxyAPI
+        run: |
+          curl -L https://github.com/router-for-me/CLIProxyAPI/releases/latest/download/CLIProxyAPI-linux-amd64 -o cliproxy
+          chmod +x cliproxy
+          ./cliproxy > cliproxy.log 2>&1 &
+          sleep 5
+
+      - name: Run Neko Scan
+        env:
+          NEKODB_TOKEN: ${{ secrets.NEKODB_TOKEN }}
+          NEKODB_REPO: ${{ github.repository_owner }}/NekoDB
+        run: |
+          docker run --network host \
+            -v ${{ github.workspace }}:/workspace \
+            -e NEKODB_TOKEN=$NEKODB_TOKEN \
+            -e NEKODB_REPO=$NEKODB_REPO \
+            -e TARGET_PATH=/workspace \
+            -e MODEL=${{ github.event.inputs.model || 'qwen3-coder-plus' }} \
+            neko-agent:latest
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
