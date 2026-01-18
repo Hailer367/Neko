@@ -30,12 +30,12 @@ RUN apt-get update && apt-get install -y \
 
 # 1. SAST & Static Analysis
 RUN apt-get update && apt-get install -y \
-    semgrep \
     bandit \
-    checkov \
     shellcheck \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --break-system-packages \
+    semgrep \
+    checkov \
     detect-secrets \
     vulture \
     dodgy \
@@ -51,10 +51,12 @@ RUN apt-get update && apt-get install -y \
 RUN curl -sSL https://raw.githubusercontent.com/trufflehog/trufflehog/main/scripts/install.sh | sh
 
 # 3. Dependency & Container Scanning (SCA)
-RUN wget https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.deb \
-    && dpkg -i trivy_0.49.1_Linux-64bit.deb && rm trivy_0.49.1_Linux-64bit.deb
-RUN wget https://github.com/anchore/grype/releases/download/v0.74.3/grype_0.74.3_linux_amd64.deb \
-    && dpkg -i grype_0.74.3_linux_amd64.deb && rm grype_0.74.3_linux_amd64.deb
+RUN wget https://github.com/aquasecurity/trivy/releases/download/v0.59.1/trivy_0.59.1_Linux-64bit.deb \
+    && dpkg -i trivy_0.59.1_Linux-64bit.deb && rm trivy_0.59.1_Linux-64bit.deb
+RUN wget https://github.com/anchore/grype/releases/download/v0.86.1/grype_0.86.1_linux_amd64.deb \
+    && dpkg -i grype_0.86.1_linux_amd64.deb && rm grype_0.86.1_linux_amd64.deb
+RUN wget https://github.com/anchore/syft/releases/download/v1.40.1/syft_1.40.1_linux_amd64.deb \
+    && dpkg -i syft_1.40.1_linux_amd64.deb && rm syft_1.40.1_linux_amd64.deb
 
 # 4. Web Scanners & Recon
 RUN apt-get update && apt-get install -y \
@@ -65,8 +67,6 @@ RUN apt-get update && apt-get install -y \
     dirb \
     dirsearch \
     wfuzz \
-    subfinder \
-    httpx-toolkit \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. Advanced Tools (Nuclei, Katana, etc.)
@@ -83,7 +83,7 @@ RUN apt-get update && apt-get install -y \
     commix \
     wapiti \
     xsser \
-    sql-ninja \
+    sqlninja \
     metasploit-framework \
     && rm -rf /var/lib/apt/lists/*
 
@@ -92,7 +92,10 @@ RUN npm install -g eslint eslint-plugin-security retire \
     && go install github.com/securego/gosec/v2/cmd/gosec@latest
 
 # 8. IaC & Cloud Security
-RUN pip3 install --break-system-packages terrascan kics
+RUN wget https://github.com/tenable/terrascan/releases/download/v1.19.1/terrascan_1.19.1_Linux_x86_64.tar.gz \
+    && tar -xf terrascan_1.19.1_Linux_x86_64.tar.gz terrascan && mv terrascan /usr/local/bin/ && rm terrascan_1.19.1_Linux_x86_64.tar.gz
+RUN wget https://github.com/Checkmarx/kics/releases/download/v2.1.3/kics_2.1.3_linux_amd64.tar.gz \
+    && tar -xf kics_2.1.3_linux_amd64.tar.gz kics && mv kics /usr/local/bin/ && rm kics_2.1.3_linux_amd64.tar.gz
 
 # 9. Additional Tools (HexStrike-style)
 RUN apt-get update && apt-get install -y \

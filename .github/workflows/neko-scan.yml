@@ -38,6 +38,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
+      - name: Ensure cache directory exists
+        run: mkdir -p /tmp/.buildx-cache
+
       - name: Decrypt QWEN_TOKENS
         id: decrypt
         env:
