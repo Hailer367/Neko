@@ -438,9 +438,7 @@ jobs:
           # Extract repo name
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
           
-          # Use the update_secret script
-          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
-          
+          # Check Python dependencies
           echo "Debug: Checking Python dependencies..."
           python3 -c "import requests; import nacl; print('Dependencies found')" || {
             echo "::error::Python dependencies (requests or pynacl) are missing!"
@@ -448,7 +446,7 @@ jobs:
           }
           
           echo "Updating secret..."
-          python3 -m strix.runtime.remote_tool_server.update_secret \
+          python3 "$GITHUB_WORKSPACE/neko/scripts/update_secret.py" \
             "$SERVER_TOKEN_SECRET" \
             "${{ github.repository_owner }}" \
             "$REPO_NAME" \
